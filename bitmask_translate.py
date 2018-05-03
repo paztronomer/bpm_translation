@@ -28,7 +28,7 @@ logging.basicConfig(
 BITDEF_INI = None
 BITDEF_END = None
 
-def open_fits(fnm, ):
+def open_fits(fnm):
     ''' Open the FITS, read the data and store it on a list
     '''
     tmp = fitsio.FITS(fnm)
@@ -75,6 +75,17 @@ def load_bitdef(d1=None, d2=None):
         BITDEF_END[j] = np.uint(BITDEF_END[k])
     return 
 
+def split_bitmask():
+    pass
+
+def load_bitmask(fnm_list=None):
+    ''' Load set of bitmask from the input list. This function needs to change
+    while the code advances/matures
+    '''
+    df_fnm = pd.read_table(fnm_list, names=['bpm'])
+    for ind, f in df_fnm.iterrows():
+        x, hdr = open_fits(f['bpm'])
+
 if __name__ == '__main__':
     t_gral = ''
     t_epi = ''
@@ -83,12 +94,16 @@ if __name__ == '__main__':
     h0 = 'Filename for the old set of definitions for the bitmask. Format: 2'
     h0 += ' columns, with bit name in the first column, and'
     h0 += ' bit integer in the second'
-    argu.add_argument('--ini', help=h0, metavar='filename')
+    argu.add_argument('--ini', '-i', help=h0, metavar='filename')
     h1 = 'Filename for the new set of definitions for the bitmask. Format:'
     h1 += ' 2 columns with the bit name in the first column, and'
     h1 += ' bit integer in the second'
-    argu.add_argument('--end', help=h1, metavar='filename')
+    argu.add_argument('--end', '-e', help=h1, metavar='filename')
+    h2 = 'List of files to be migrated from a set of definitions to another'
+    argu.add_argument('--mig', '-m', help=h2, metavar='filename')
     argu = argu.parse_args()
 
     # Load the tables
     load_bitdef(d1=argu.ini, d2=argu.end)
+    # Load BPM FITS file and split in its components
+    load_bitmask(fnm_list=argu.mig)
