@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 ''' Code for translating Bad Pixel Masks from a set of definitions to another
 Function-driven instead of Class, for simpler paralellisnm
 '''
@@ -8,6 +9,7 @@ import time
 import logging
 import argparse
 import copy
+import uuid
 import numpy as np
 import pandas as pd
 from functools import partial
@@ -72,21 +74,190 @@ def load_bitdef(d1=None, d2=None):
     for k in BITDEF_INI:
         BITDEF_INI[k] = np.uint(BITDEF_INI[k])
     for j in BITDEF_END:
-        BITDEF_END[j] = np.uint(BITDEF_END[k])
-    return 
+        BITDEF_END[j] = np.uint(BITDEF_END[j])
+    return True 
 
-def split_bitmask():
-    pass
+def diff_bitdef():
+    ''' Compare both dictionaries with BIT definitions and print the BITS 
+    showing difference between the two sets.
+    '''
+    inter = set(BITDEF_INI.keys()).intersection(set(BITDEF_END.keys()))
+    diff = set(BITDEF_INI.keys()).symmetric_difference(set(BITDEF_END.keys()))
+    # Compare in terms of keys, intersection between 
+    for k_diff in diff:
+        if (k_diff in set(BITDEF_INI.keys())):
+            t_i0 = 'Different BITS: shown in INITIAL but not in FINAL bitdef'
+            t_i0 += ' {0}:{1}'.format(k_diff, BITDEF_INI[k_diff])
+            logging.info(t_i0)
+        elif (k_diff in set(BITDEF_END.keys())):
+            t_i1 = 'Different BITS: shown in FINAL but not in INITIAL bitdef'
+            t_i1 += ' {0}:{1}'.format(k_diff, BITDEF_END[k_diff])
+            logging.info(t_i1)
+    # Compare in terms of values, for same key 
+    for k_inter in inter:
+        if (BITDEF_INI[k_inter] != BITDEF_END[k_inter]):
+            t_i2 = 'Different definitions: '
+            t_i2 += '{0}:{1} in INITIAL'.format(k_inter, BITDEF_INI[k_inter])
+            t_i2 += ' {0}:{1} in FINAL'.format(k_inter, BITDEF_END[k_inter])
+            logging.info(t_i2)
+    return True
 
-def load_bitmask(fnm_list=None):
+def bit_count(int_type):
+    ''' Function to count the amount of bits composing a number, that is the
+    number of base 2 components on which it can be separated, and then
+    reconstructed by simply sum them. Idea from Wiki Python.
+    Brian Kernighan's way for counting bits. Thismethod was in fact
+    discovered by Wegner and then Lehmer in the 60s
+    This method counts bit-wise. Each iteration is not simply a step of 1.
+    Example: iter1: (2066, 2065), iter2: (2064, 2063), iter3: (2048, 2047)
+    Inputs
+    - int_type: integer
+    Output
+    - integer with the number of base-2 numbers needed for the decomposition
+    '''
+    counter = 0
+    while int_type:
+        int_type &= int_type - 1
+        counter += 1
+    return counter
+
+def bit_decompose(int_x):
+    ''' Function to decompose a number in base-2 numbers. This is performed by
+    two binary operators. Idea from Stackoverflow.
+        x << y
+    Returns x with the bits shifted to the left by y places (and new bits on
+    the right-hand-side are zeros). This is the same as multiplying x by 2**y.
+        x & y
+    Does a "bitwise and". Each bit of the output is 1 if the corresponding bit
+    of x AND of y is 1, otherwise it's 0.
+    Inputs
+    - int_x: integer
+    Returns
+    - list of base-2 values from which adding them, the input integer can be
+    recovered
+    '''
+    base2 = []
+    i = 1
+    while (i <= int_x):
+        if (i & int_x):
+            base2.append(i)
+        i <<= 1
+    return base2
+
+def flatten_list(list_2levels):
+    ''' Function to flatten a list of lists, generating an output with
+    all elements ia a single level. No duplicate drop neither sort are
+    performed
+    '''
+    f = lambda x: [item for sublist in x for item in sublist]
+    res = f(list_2levels)
+    return res
+
+def split_bitmask(arr, ccdnum, save_fits=False, outnm=None):
+    ''' Return a n-dimensional array were each layer is an individual bitmask,
+    then, can be loaded into DS9. This function helps as diagnostic.
+    '''
+    # I need 3 lists/arrays to perform the splitting:
+    # 1) different values composing the array
+    # 2) the bits on which the above values can be decomposed
+    # 3) the number of unique bits used on the above decomposition
+    # First get all the different values the mask has
+    diff_val = np.sort(np.unique(arr.ravel()))
+    # Decompose each of the unique values in its bits
+    decomp2bit = []
+    for d_i in diff_val:
+        dcomp = bit_decompose(d_i)
+        decomp2bit.append(dcomp)
+    diff_val = tuple(diff_val)
+    decomp2bit = tuple(decomp2bit)
+    # Be careful to keep diff_val and decomp2bit with the same element order,
+    # because both will be compared
+    # Get all the used bits, by the unique components of the flatten list
+    # Option for collection of unordered unique elements:
+    #   bit_uniq = repr(sorted(set(bit_uniq)))
+    bit_uniq = flatten_list(list(decomp2bit))
+    bit_uniq = np.sort(np.unique(bit_uniq))
+    # Safe checks
+    #
+    # Check there are no missing definitions!
+    #
+    # Go through the unique bits, and get the positions of the values
+    # containig such bit
+    bit2val = dict()
+    # Over the unique bits
+    for b in bit_uniq:
+        tmp_b = []
+        # Over the bits composing each of the values of the array
+        for idx_nb, nb in enumerate(decomp2bit):
+            if (b in nb):
+                tmp_b.append(diff_val[idx_nb])
+        # Fill a dictionary with the values that contains every bit
+        bit2val.update({'BIT_{0}'.format(b) : tmp_b})
+    # Create a ndimensional matrix were to store the positions having
+    # each of the bits. As many layers as unique bits are required to
+    # construct all the values
+    is1st = True
+    for ib in bit_uniq:
+        tmp_arr = np.full(arr.shape, np.nan)
+        # Where do the initial array contains the values that are 
+        # composed by the actual bit?
+        for k in bit2val['BIT_{0}'.format(ib)]:
+            tmp_arr[np.where(arr == k)] = ib
+            print 'bit: ', ib, ' N: ', len(np.where(arr == k)[0])
+        print '==========', ib, len(np.where(tmp_arr == ib)[0])
+        # Add new axis
+        tmp_arr = tmp_arr[np.newaxis , : , :]
+        if is1st:
+            ndimBit = tmp_arr
+            is1st = False
+        # NOTE: FITS files recognizes depth as the 1st dimesion
+        # ndimBit = np.dstack((ndimBit, tmp_arr))
+        ndimBit = np.vstack((ndimBit, tmp_arr))
+    if save_fits:
+        if (outnm is None):
+            outnm = str(uuid.uuid4())
+            outnm = os.path.joint(outnm, '.fits')
+        fits = fitsio.FITS(outnm, 'rw')
+        fits.write(ndimBit)
+        fits[-1].write_checksum()
+        hlist = [
+            {'name' : 'CCDNUM', 'value' : ccdnum, 'comment' : 'CCD number'},
+            {'name' : 'COMMENT', 
+             'value' : 'Multilayer bitmask, Francisco Paz-Chinchon'}
+            ]
+        fits[-1].write_keys(hlist)
+        fits.close()
+        if os.path.exists(outnm):
+            t_w = 'File {0} exists. Will not overwrite'.format(outnm)
+            logging.warning(t_w)
+        else:
+            t_i = 'Multilayer bitmaks saved {0}'.format(outnm)
+            logging.info(t_i)
+    ''' When examining using DS9 there is something weird! look..many val=1 
+    at the beginning, then nothing appears as masked.
+    '''
+    exit()
+
+def load_bitmask(fnm_list=None, ext=0):
     ''' Load set of bitmask from the input list. This function needs to change
     while the code advances/matures
     '''
     df_fnm = pd.read_table(fnm_list, names=['bpm'])
     for ind, f in df_fnm.iterrows():
         x, hdr = open_fits(f['bpm'])
+        if ((len(x) > 1) or (len(hdr) > 1)):
+            t_w = 'FITS file {0} has more than 1 extension'.format(f['bpm'])
+            logging.warning(t_w)
+        x = x[ext]
+        hdr = hdr[ext]
+        ccdnum = hdr['CCDNUM']
+        out_bitLayer = os.path.join(os.getcwd(), 
+                                    'bitLayer_' + os.path.basename(f['bpm']))
+        split_bitmask(x, ccdnum, save_fits=True, outnm=out_bitLayer)
 
-if __name__ == '__main__':
+def get_args():
+    ''' Construct the argument parser 
+    '''
     t_gral = ''
     t_epi = ''
     argu = argparse.ArgumentParser(description=t_gral, epilog=t_epi)
@@ -102,8 +273,14 @@ if __name__ == '__main__':
     h2 = 'List of files to be migrated from a set of definitions to another'
     argu.add_argument('--mig', '-m', help=h2, metavar='filename')
     argu = argu.parse_args()
+    return argu
 
-    # Load the tables
+if __name__ == '__main__':
+    # Argument parser
+    argu = get_args()
+    # Load the tables, storing info in global variables
     load_bitdef(d1=argu.ini, d2=argu.end)
+    # Show differences between definitions
+    diff_bitdef()
     # Load BPM FITS file and split in its components
     load_bitmask(fnm_list=argu.mig)
