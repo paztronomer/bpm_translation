@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 ''' Code for translating Bad Pixel Masks from a set of definitions to another
 Function-driven instead of Class, for simpler paralellisnm
+NOTE: in this code is assumed that the amount of masked pixels is 
+roughly the same between definitions 
 '''
 
 import os
@@ -78,29 +80,40 @@ def load_bitdef(d1=None, d2=None):
     return True 
 
 def diff_bitdef():
-    ''' Compare both dictionaries with BIT definitions and print the BITS 
-    showing difference between the two sets.
+    ''' Compare both dictionaries bit definitions. Also compare the bit value
+    for the same bit definition, on both schemas. Leave it as general as 
+    possible
+    Returns
+    - 2 lists, one containing the bit definition names not being common for 
+    both the definitions, and the other containing the bit definitions for 
+    the bits having different name in both sets
     '''
+    # Set intersection and differences. Beware of the use of set() and 
+    # its capabilities/limitations
     inter = set(BITDEF_INI.keys()).intersection(set(BITDEF_END.keys()))
     diff = set(BITDEF_INI.keys()).symmetric_difference(set(BITDEF_END.keys()))
-    # Compare in terms of keys, intersection between 
+    # Compare in terms of keys, for both sets.  
     for k_diff in diff:
+        # Do not discard the possibility of both sets having unique bit
+        # definitions
         if (k_diff in set(BITDEF_INI.keys())):
             t_i0 = 'Different BITS: shown in INITIAL but not in FINAL bitdef'
             t_i0 += ' {0}:{1}'.format(k_diff, BITDEF_INI[k_diff])
             logging.info(t_i0)
-        elif (k_diff in set(BITDEF_END.keys())):
+        if (k_diff in set(BITDEF_END.keys())):
             t_i1 = 'Different BITS: shown in FINAL but not in INITIAL bitdef'
             t_i1 += ' {0}:{1}'.format(k_diff, BITDEF_END[k_diff])
             logging.info(t_i1)
-    # Compare in terms of values, for same key 
+    # Compare in terms of values, for same key across both sets.
+    diff_keyvalues = []
     for k_inter in inter:
         if (BITDEF_INI[k_inter] != BITDEF_END[k_inter]):
+            diff_keyvalues.append(k_iter)
             t_i2 = 'Different definitions: '
             t_i2 += '{0}:{1} in INITIAL'.format(k_inter, BITDEF_INI[k_inter])
             t_i2 += ' {0}:{1} in FINAL'.format(k_inter, BITDEF_END[k_inter])
             logging.info(t_i2)
-    return True
+    return list(diff), diff_keyvalues
 
 def bit_count(int_type):
     ''' Function to count the amount of bits composing a number, that is the
@@ -153,7 +166,7 @@ def flatten_list(list_2levels):
     res = f(list_2levels)
     return res
 
-def split_bitmask(arr, ccdnum, save_fits=False, outnm=None):
+def split_bitmask_FITS(arr, ccdnum, save_fits=False, outnm=None):
     ''' Return a n-dimensional array were each layer is an individual bitmask,
     then, can be loaded into DS9. This function helps as diagnostic.
     '''
@@ -198,13 +211,15 @@ def split_bitmask(arr, ccdnum, save_fits=False, outnm=None):
     # construct all the values
     is1st = True
     for ib in bit_uniq:
-        tmp_arr = np.full(arr.shape, np.nan)
+        # Zeros or NaN?
+        # tmp_arr = np.full(arr.shape, np.nan)
+        tmp_arr = np.zeros_like(arr)
         # Where do the initial array contains the values that are 
         # composed by the actual bit?
         for k in bit2val['BIT_{0}'.format(ib)]:
             tmp_arr[np.where(arr == k)] = ib
-            print 'bit: ', ib, ' N: ', len(np.where(arr == k)[0])
-        print '==========', ib, len(np.where(tmp_arr == ib)[0])
+            # print 'bit: ', ib, ' N: ', len(np.where(arr == k)[0])
+        # print '==========', ib, len(np.where(tmp_arr == ib)[0])
         # Add new axis
         tmp_arr = tmp_arr[np.newaxis , : , :]
         if is1st:
@@ -217,26 +232,52 @@ def split_bitmask(arr, ccdnum, save_fits=False, outnm=None):
         if (outnm is None):
             outnm = str(uuid.uuid4())
             outnm = os.path.joint(outnm, '.fits')
-        fits = fitsio.FITS(outnm, 'rw')
-        fits.write(ndimBit)
-        fits[-1].write_checksum()
-        hlist = [
-            {'name' : 'CCDNUM', 'value' : ccdnum, 'comment' : 'CCD number'},
-            {'name' : 'COMMENT', 
-             'value' : 'Multilayer bitmask, Francisco Paz-Chinchon'}
-            ]
-        fits[-1].write_keys(hlist)
-        fits.close()
         if os.path.exists(outnm):
             t_w = 'File {0} exists. Will not overwrite'.format(outnm)
             logging.warning(t_w)
-        else:
+        else: 
+            fits = fitsio.FITS(outnm, 'rw')
+            fits.write(ndimBit)
+            fits[-1].write_checksum()
+            hlist = [
+                {'name' : 'CCDNUM', 'value' : ccdnum, 'comment' : 'CCD number'},
+                {'name' : 'COMMENT', 
+                 'value' : 'Multilayer bitmask, Francisco Paz-Chinchon'}
+                ]
+            fits[-1].write_keys(hlist)
+            fits.close()
             t_i = 'Multilayer bitmaks saved {0}'.format(outnm)
             logging.info(t_i)
-    ''' When examining using DS9 there is something weird! look..many val=1 
-    at the beginning, then nothing appears as masked.
+    return True
+
+def change_bitmask(tab_ini='bad_pixels.lst', 
+                   tab_end='bad_pixels_20160506.lst'):
+    ''' NOTE: this function is so similar to split_bitmask_FITS()
+    Do it as general as possible
     '''
+    # 1) Load sections corresponding to each bit
+    df_end = pd.read_table(tab_ini, comment='#', 
+                           names=['ccdnum', 'x0', 'x1', 'y0', 'y1', 'bpmdef'])
+    df_ini = pd.read_table(tab_end, comment='#', 
+                           names=['ccdnum', 'x0', 'x1', 'y0', 'y1', 'bpmdef']) 
+    # 2) Check which definitions are not common
+    diff_name, diff_keyval = diff_bitdef()
+    print diff_name, diff_keyval
+    #
+    #
+    # Here!
+    #
+    #
+
+    # Next steps
+    # - Check the number of pixels masked for each bit are the same
+    # - Change bits without overlap to previous ones
+    # - Add layes for new bits
+    # - Save modified bits array
+    
+    
     exit()
+
 
 def load_bitmask(fnm_list=None, ext=0):
     ''' Load set of bitmask from the input list. This function needs to change
@@ -253,7 +294,20 @@ def load_bitmask(fnm_list=None, ext=0):
         ccdnum = hdr['CCDNUM']
         out_bitLayer = os.path.join(os.getcwd(), 
                                     'bitLayer_' + os.path.basename(f['bpm']))
-        split_bitmask(x, ccdnum, save_fits=True, outnm=out_bitLayer)
+        # Translate from a definition to another
+        # Check at least there is one pixel masked with each bit in the 
+        # layers. 
+        # For translating need to use the spatial position of the bits that 
+        # has no definition on the BPMDEF_INI but yes in BPMDEF_END
+        #  
+        x_new = change_bitmask()
+        
+        exit()
+
+        # Split bitmask into its components
+        # NOTE: would be helpful to have this function run with the final
+        # translated BPM and also with the previous
+        split_bitmask_FITS(x_new, ccdnum, save_fits=True, outnm=out_bitLayer)
 
 def get_args():
     ''' Construct the argument parser 
@@ -280,7 +334,6 @@ if __name__ == '__main__':
     argu = get_args()
     # Load the tables, storing info in global variables
     load_bitdef(d1=argu.ini, d2=argu.end)
-    # Show differences between definitions
-    diff_bitdef()
     # Load BPM FITS file and split in its components
     load_bitmask(fnm_list=argu.mig)
+    # 
