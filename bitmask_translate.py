@@ -158,7 +158,7 @@ def bit_decompose(int_x):
 
 def flatten_list(list_2levels):
     ''' Function to flatten a list of lists, generating an output with
-    all elements ia a single level. No duplicate drop neither sort are
+    all elements in a single level. No duplicate drop neither sort are
     performed
     '''
     f = lambda x: [item for sublist in x for item in sublist]
@@ -255,39 +255,163 @@ def change_bitmask(arr, header, ccdnum, tab_ini, tab_end, compare_tab=True):
     '''
     t_i = 'Working on CCD={0}'.format(ccdnum)
     logging.info(t_i)
-    # 1) Load sections corresponding to each bit
-    df_ini = pd.read_table(
+    # Previous information: get the list of bits composing the whole CCD
+    aux_unique = np.unique(arr)
+    ccd_bits = map(bit_decompose, aux_unique[1:])
+    ccd_bits = flatten_list(ccd_bits)
+    ccd_bits = list(set(ccd_bits))
+    t_i = 'Bits composing the CCD: {0}'.format(sorted(ccd_bits))
+    logging.info(t_i)
+    if not( set(ccd_bits).issubset(set(BITDEF_INI.values())) ):
+        t_e = 'Not all bits composing the CCD are contained on the initial'
+        t_e += ' bit definition. Exiting'
+        logging.error(t_e)
+        exit(1)
+    # 1) Load sections corresponding to each bit.
+    s_ini = pd.read_table(
         tab_ini, comment='#', sep='\s+', 
         names=['ccdnum', 'x0', 'x1', 'y0', 'y1', 'bpmdef_ini']
     )
-    df_end = pd.read_table(
+    s_end = pd.read_table(
         tab_end, comment='#', sep='\s+',
         names=['ccdnum', 'x0', 'x1', 'y0', 'y1', 'bpmdef_end']
     ) 
-    # 2) Check which definitions are not common
+    # 2) Check which definitions are not common for both sets. These should be
+    # the bits to be updated. Check also which definitions having the same
+    # key (name) have different numerical value.
     diff_bitname, diff_keyval = diff_bitdef()
-    # Check if there are insconsitencies between the two set of definitions
+    # Check if there are insconsitencies between the two set of definitions, 
+    # for the bits in common
     if (len(diff_keyval) > 0):
         t_e = 'Bit value for the same bit definition differs. Each bitdef'
         t_e += ' should have the same value, regardless the set. Bits'
         t_e += ' showing this issue are: {0}'.format(','.join(diff_keyval))
+        t_e += ' Exiting'
         logging.error(t_e)
         exit(1)
     # 3) Per CCD, translate the bitmask. Only add the new BITS, replacing
     # the old ones
     # Iterate CCD by CCD. Use new set to put new bits in place
-    # 
-    # For the CCD 
-    df_ini = df_ini.loc[df_ini['ccdnum'] == ccdnum]
-    df_ini = df_ini.reset_index(drop=True)
-    df_end = df_end.loc[df_end['ccdnum'] == ccdnum]
-    df_end = df_end.reset_index(drop=True)
-    # Remember indexing in the table starts in 1. Shape is (4096, 2048)
-    if (len(df_end.index) == 0):
-        t_w = 'CCD {0} has no bitmask in the NEW set. Returning the initial'
-        t_w += ' mask as result'
+    #
+    # 3.1) Refine sections to only those in the current CCD
+    s_ini = s_ini.loc[s_ini['ccdnum'] == ccdnum]
+    s_ini.reset_index(drop=True, inplace=True)
+    s_end = s_end.loc[s_end['ccdnum'] == ccdnum]
+    s_end.reset_index(drop=True, inplace=True)
+    # Check there are masks to be updated in the current CCD.
+    if ((len(s_ini.index) == 0) or (len(s_end.index) == 0)):
+        t_w = 'There are no masks to be updated for the current CCD.'
+        t_w += ' Returning initial CCD array'
         logging.warning(t_w)
         return arr
+    # 3.2) Crossmatch the bits to be updated. We already checked the other 
+    # bits have common definition in both sets
+    bits2update = [BITDEF_END[s] for s in diff_bitname] 
+    s_end = s_end.loc[s_end['bpmdef_end'].isin(bits2update)]
+    # Important: the following assumes that both set of polygons (old and new)
+    # have the same polygon defined by coordinates, but with different bits. 
+    # Then, the update will be done on this specific set of NEW bits 
+    # coming from the crsoomathc of spatial match of coordinates
+    # Crossmatch both definitions based on the vertices of polygons
+    s_update = pd.merge(s_ini, s_end, on=['x0', 'x1', 'y0', 'y1'])
+    # Check the crossmatch is not missing any row
+    if (len(s_update.index) != len(s_end.index)):
+        t_e = 'The crossmatch between old and new definition has missing'
+        t_e += ' common entries. Exiting'
+        logging.error(t_e)
+        exit(1)
+    # 3.3) Go through the different polygons coming out of the crossmatch
+    # and check if the old-bit is in place, in which case the new-bit will
+    # take its place
+    # NOTE: Remember table coordinates starts in 1. Shape is (4096, 2048)
+    # Iterate over polygons, adding the new-bit
+    for idx, r1 in s_update.iterrows():
+        y0, y1, x0, x1 = r1['y0'], r1['y1'], r1['x0'], r1['x1']
+        oldbit = r1['bpmdef_ini']
+        newbit = r1['bpmdef_end']
+        xsub = arr[y0 - 1 : y1 , x0 - 1 : x1] 
+        # Iterate over the pixels in each section
+        for index, px in np.ndenumerate(xsub):
+            # Bits composing the pixel
+            px_bits = bit_decompose(px)  
+            # Check the old bit is among the pixel bits. If not, an error
+            # must be raised and exit. The exit is drastic, but we need the
+            # old-bit to be replaced
+            if not (oldbit in px_bits):
+                t_e = 'No old-bit={0} in section of'.format(oldbit)
+                t_e += ' coords=[{0},{1},{2},{3}]'.format(x0, x1, y0, y1)
+                t_e += ' CCD {0}.'.format(ccdnum)
+                t_e += ' New-bit={0},'.format(newbit)
+                t_e += ' pixel-bits={0},'.format(px_bits)
+                logging.error(t_e)
+                exit(1)
+        # At this point, old-bit is in ALL the pixel-bits
+        # Add the new-bit to the section, but still don't remove the old, 
+        # because we need it to be present for overlapping sections.  
+        xsub += newbit
+        # Replace the section into the CCD-array
+        arr[y0 - 1 : y1, x0 - 1 : x1] = xsub
+        #
+        tmp = map(bit_decompose, np.unique(xsub))
+        tmp = flatten_list(tmp)
+        tmp = list(set(tmp))
+        print 'before remove old-bit: {0}'.format(sorted(tmp))
+    # Now must iterate again, over the same sections, and remove the old-bit
+    # From the above loop, we already know old-bit is present in the 
+    # sections
+    # Over sections
+    for idx, r2 in s_update.iterrows():
+        y0, y1, x0, x1 = r2['y0'], r2['y1'], r2['x0'], r2['x1']
+        oldbit_x = r2['bpmdef_ini']
+        newbit_x = r2['bpmdef_end']
+        xsub_x = arr[y0 - 1 : y1 , x0 - 1 : x1] 
+        # Over pixels in section
+        for x in np.nditer(xsub_x, op_flags=['readwrite']):
+            x_bits = bit_decompose(x)  
+            if (oldbit_x in x_bits):
+                x -= oldbit_x
+        # Replace section into the CCD-array
+        arr[y0 - 1 : y1, x0 - 1 : x1] = xsub_x
+        #
+        tmp = map(bit_decompose, np.unique(xsub_x))
+        tmp = flatten_list(tmp)
+        tmp = list(set(tmp))
+        print 'after remove old-bit: {0}'.format(sorted(tmp))
+    exit(0)
+
+
+    if 1:
+        #
+        # Below fails because replaces oldbit, and then other overlaping
+        # sections needs it. There are 2 options: go and replace pixel
+        # by pixel OR add the new bits and replace just at the very end
+        # for all the sections. The las requires that when no oldbit is
+        # found, the code must exit, to not subtract an inexistint bit.
+        if False:
+            for index, x in np.ndenumerate(xsub):
+                # np.nditer(xsub, op_flags=['readwrite']):
+                dec = bit_decompose(x)  
+                print index, dec
+                if (oldval in dec):# or (set(prev_oldval).issubset(set(dec))):
+                    pass
+                else:
+                    t_e = 'No old bit={0} in bitmask'.format(oldval)
+                    t_e += ' for new bit={0},'.format(newval)
+                    t_e += ' CCD {0},'.format(ccdnum)
+                    t_e += ' coords=[{0},{1},{2},{3}]'.format(x0, x1, y0, y1)
+                    t_e += ' Bits={0},'.format(dec)
+                    t_e += ' coords within section={0}'.format(index)
+                    logging.error(t_e)
+                    print 'unique vals ccd: ', np.unique(arr)
+                    exit(1)
+            # If successful, then replace the bit in the whole section
+            xsub = xsub - oldval + newval
+            prev_oldval.append(oldval)
+            # Put it on the array
+            arr[y0 - 1 : y1, x0 - 1 : x1] = xsub
+
+
+
     # Iterate over the bits to be updated. Check the polygons tables 
     # corresponds to what is in fact in the array
     # 
@@ -304,6 +428,7 @@ def change_bitmask(arr, header, ccdnum, tab_ini, tab_end, compare_tab=True):
         logging.error(t_e)
         exit(1)
     # Walk through the different sections
+    prev_oldval = []
     for idx, r1 in df_end_sub.iterrows():
         y0, y1, x0, x1 = r1['y0'], r1['y1'], r1['x0'], r1['x1']
         newval = r1['bpmdef_end']
@@ -317,22 +442,36 @@ def change_bitmask(arr, header, ccdnum, tab_ini, tab_end, compare_tab=True):
         # the bit from the old definition. If true, then replace it. The 
         # iteration will fail if in at least 1 pixel the old bit is not 
         # present
-        for x in np.nditer(xsub, op_flags=['readwrite']):
-            dec = bit_decompose(x)  
-            if oldval in dec:
-                pass
-            else:
-                t_e = 'No old bit={0} in bitmask'.format(oldval)
-                t_e += ' for new bit={0},'.format(newval)
-                t_e += ' CCD {0},'.format(ccdnum)
-                t_e += ' coords=[{0},{1},{2},{3}]'.format(x0, x1, y0, y1)
-                t_e += ' Bits={0}'.format(dec)
-                logging.error(t_e)
-                #exit(1)
-        # If successful, then replace the bit in the whole section
-        xsub = xsub - oldval + newval
-        # Put it on the array
-        arr[y0 - 1 : y1, x0 - 1 : x1] = xsub
+        
+        
+        #
+        # Below fails because replaces oldbit, and then other overlaping
+        # sections needs it. There are 2 options: go and replace pixel
+        # by pixel OR add the new bits and replace just at the very end
+        # for all the sections. The las requires that when no oldbit is
+        # found, the code must exit, to not subtract an inexistint bit.
+        if False:
+            for index, x in np.ndenumerate(xsub):
+                # np.nditer(xsub, op_flags=['readwrite']):
+                dec = bit_decompose(x)  
+                print index, dec
+                if (oldval in dec):# or (set(prev_oldval).issubset(set(dec))):
+                    pass
+                else:
+                    t_e = 'No old bit={0} in bitmask'.format(oldval)
+                    t_e += ' for new bit={0},'.format(newval)
+                    t_e += ' CCD {0},'.format(ccdnum)
+                    t_e += ' coords=[{0},{1},{2},{3}]'.format(x0, x1, y0, y1)
+                    t_e += ' Bits={0},'.format(dec)
+                    t_e += ' coords within section={0}'.format(index)
+                    logging.error(t_e)
+                    print 'unique vals ccd: ', np.unique(arr)
+                    exit(1)
+            # If successful, then replace the bit in the whole section
+            xsub = xsub - oldval + newval
+            prev_oldval.append(oldval)
+            # Put it on the array
+            arr[y0 - 1 : y1, x0 - 1 : x1] = xsub
     # Comparison between the tables defining the polygons to be masked
     if compare_tab:
         #
@@ -353,8 +492,6 @@ def change_bitmask(arr, header, ccdnum, tab_ini, tab_end, compare_tab=True):
         f.close()
     return arr
     #
-    
-    
     '''
     # Comparison between the BPM FITS file and the table suppossed to be the
     # source of the polygons in the FITS file.
@@ -411,6 +548,14 @@ def load_bitmask(fnm_list=None, tab_ini=None, tab_end=None, ext=0):
     ''' Load set of bitmask from the input list. This function needs to change
     while the code advances/matures
     '''
+    # Bits to be updated are those who are in the new set but not in the old
+    diff_bitname, diff_keyval = diff_bitdef()
+    t_i = 'Bitdef to be updated: {0}'.format(diff_bitname)
+    logging.info(t_i)
+    if (len(diff_keyval) > 0):
+        t_i = 'Bits having different keys between sets:'
+        t_i += ' {0}'.format(diff_keyval)
+        logging.info(t_i)
     # Load the set of full paths for BPM files to be translated
     df_fnm = pd.read_table(fnm_list, names=['bpm'])
     for ind, f in df_fnm.iterrows():
@@ -438,7 +583,7 @@ def load_bitmask(fnm_list=None, tab_ini=None, tab_end=None, ext=0):
         # PENDING: save a statistics of difference in number of bits between
         # initial and final definition
         x_new = change_bitmask(x, hdr, ccdnum, tab_ini, tab_end)
-         
+            
         if False:
             # Split bitmask into its components
             # NOTE: would be helpful to have this function run with the final
