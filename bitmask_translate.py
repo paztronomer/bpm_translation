@@ -77,7 +77,7 @@ def load_bitdef(d1=None, d2=None):
         BITDEF_END[j] = np.uint(BITDEF_END[j])
     return True 
 
-def diff_bitdef():
+def diff_bitdef(show_diff=False):
     ''' Compare both dictionaries bit definitions. Also compare the bit value
     for the same bit definition, on both schemas. Leave it as general as 
     possible
@@ -91,27 +91,29 @@ def diff_bitdef():
     # its capabilities/limitations
     inter = set(BITDEF_INI.keys()).intersection(set(BITDEF_END.keys()))
     diff = set(BITDEF_INI.keys()).symmetric_difference(set(BITDEF_END.keys()))
-    # Compare in terms of keys, for both sets.  
-    for k_diff in diff:
-        # Do not discard the possibility of both sets having unique bit
-        # definitions
-        if (k_diff in set(BITDEF_INI.keys())):
-            t_i0 = 'Different BITS: shown in INITIAL but not in FINAL bitdef'
-            t_i0 += ' {0}:{1}'.format(k_diff, BITDEF_INI[k_diff])
-            logging.info(t_i0)
-        if (k_diff in set(BITDEF_END.keys())):
-            t_i1 = 'Different BITS: shown in FINAL but not in INITIAL bitdef'
-            t_i1 += ' {0}:{1}'.format(k_diff, BITDEF_END[k_diff])
-            logging.info(t_i1)
+    # Compare in terms of keys, for both sets.
+    if show_diff:
+        for k_diff in diff:
+            # Do not discard the possibility of both sets having unique bit
+            # definitions
+            if (k_diff in set(BITDEF_INI.keys())):
+                t_i0 = 'Different BITS: shown in INITIAL but not in FINAL'
+                t_i0 += ' bitdef {0}:{1}'.format(k_diff, BITDEF_INI[k_diff])
+                logging.info(t_i0)
+            if (k_diff in set(BITDEF_END.keys())):
+                t_i1 = 'Different BITS: shown in FINAL but not in INITIAL'
+                t_i1 += ' bitdef {0}:{1}'.format(k_diff, BITDEF_END[k_diff])
+                logging.info(t_i1)
     # Compare in terms of values, for same key across both sets.
     diff_keyvalues = []
     for k_inter in inter:
         if (BITDEF_INI[k_inter] != BITDEF_END[k_inter]):
             diff_keyvalues.append(k_iter)
-            t_i2 = 'Different definitions: '
-            t_i2 += '{0}:{1} in INITIAL'.format(k_inter, BITDEF_INI[k_inter])
-            t_i2 += ' {0}:{1} in FINAL'.format(k_inter, BITDEF_END[k_inter])
-            logging.info(t_i2)
+            if show_diff:
+                t_i2 = 'Different definitions: '
+                t_i2 += '{0}:{1} INITIAL'.format(k_inter, BITDEF_INI[k_inter])
+                t_i2 += ' {0}:{1} FINAL'.format(k_inter, BITDEF_END[k_inter])
+                logging.info(t_i2)
     return list(diff), diff_keyvalues
 
 def bit_count(int_type):
@@ -249,10 +251,10 @@ def split_bitmask_FITS(arr, ccdnum, save_fits=False, outnm=None):
             logging.info(t_i)
     return True
 
-def change_bitmask(arr, header, ccdnum, tab_ini, tab_end, compare_tab=True):
-    ''' NOTE: this function is so similar to split_bitmask_FITS()
-    Do it as general as possible
-    '''
+def change_bitmask(in_list):
+    # For parralelism
+    arr, header, ccdnum, tab_ini, tab_end, compare_tab = in_list
+    #
     t_i = 'Working on CCD={0}'.format(ccdnum)
     logging.info(t_i)
     # Previous information: get the list of bits composing the whole CCD
@@ -260,7 +262,7 @@ def change_bitmask(arr, header, ccdnum, tab_ini, tab_end, compare_tab=True):
     ccd_bits = map(bit_decompose, aux_unique[1:])
     ccd_bits = flatten_list(ccd_bits)
     ccd_bits = list(set(ccd_bits))
-    t_i = 'Bits composing the CCD: {0}'.format(sorted(ccd_bits))
+    t_i = 'Bits composing the CCD {0}: {1}'.format(ccdnum, sorted(ccd_bits))
     logging.info(t_i)
     if not( set(ccd_bits).issubset(set(BITDEF_INI.values())) ):
         t_e = 'Not all bits composing the CCD are contained on the initial'
@@ -276,6 +278,25 @@ def change_bitmask(arr, header, ccdnum, tab_ini, tab_end, compare_tab=True):
         tab_end, comment='#', sep='\s+',
         names=['ccdnum', 'x0', 'x1', 'y0', 'y1', 'bpmdef_end']
     ) 
+    # Optional
+    # 1.1) Comparison between the tables defining the polygons to be masked,
+    # for the current CCD
+    if compare_tab:
+        # Redirects the print to a file
+        orig_stdout = sys.stdout
+        comp_fnm = 'compare_bad_pixels_lists_PID{0}.txt'.format(os.getpid())
+        f = open(comp_fnm, 'w')
+        sys.stdout = f
+        # As on the above methods, crossmatch the tables defining sections
+        df_merge = pd.merge(s_ini, s_end, on=['x0', 'x1', 'y0', 'y1'])
+        if (len(df_merge.index) != len(s_ini.index)): 
+            print 'Different number of matches!!!'
+        print df_merge
+        print 'pre Y4\n', s_ini
+        print 'post Y4\n', s_end
+        print '=' * 80
+        sys.stdout = orig_stdout
+        f.close()
     # 2) Check which definitions are not common for both sets. These should be
     # the bits to be updated. Check also which definitions having the same
     # key (name) have different numerical value.
@@ -303,7 +324,7 @@ def change_bitmask(arr, header, ccdnum, tab_ini, tab_end, compare_tab=True):
         t_w = 'There are no masks to be updated for the current CCD.'
         t_w += ' Returning initial CCD array'
         logging.warning(t_w)
-        return arr
+        return tuple([header, arr])
     # 3.2) Crossmatch the bits to be updated. We already checked the other 
     # bits have common definition in both sets
     bits2update = [BITDEF_END[s] for s in diff_bitname] 
@@ -352,10 +373,12 @@ def change_bitmask(arr, header, ccdnum, tab_ini, tab_end, compare_tab=True):
         # Replace the section into the CCD-array
         arr[y0 - 1 : y1, x0 - 1 : x1] = xsub
         #
-        tmp = map(bit_decompose, np.unique(xsub))
-        tmp = flatten_list(tmp)
-        tmp = list(set(tmp))
-        print 'before remove old-bit: {0}'.format(sorted(tmp))
+        if False:
+            tmp = map(bit_decompose, np.unique(xsub))
+            tmp = flatten_list(tmp)
+            tmp = list(set(tmp))
+            tmp = sorted(tmp)
+            print 'Added new-bit, before remove old-bit: {0}'.format(tmp)
     # Now must iterate again, over the same sections, and remove the old-bit
     # From the above loop, we already know old-bit is present in the 
     # sections
@@ -373,39 +396,22 @@ def change_bitmask(arr, header, ccdnum, tab_ini, tab_end, compare_tab=True):
         # Replace section into the CCD-array
         arr[y0 - 1 : y1, x0 - 1 : x1] = xsub_x
         #
-        tmp = map(bit_decompose, np.unique(xsub_x))
-        tmp = flatten_list(tmp)
-        tmp = list(set(tmp))
-        print 'after remove old-bit: {0}'.format(sorted(tmp))
-    # Optional
-    # 4) Comparison between the tables defining the polygons to be masked,
-    # for the current CCD
-    if compare_tab:
-        # Redirects the print to a file
-        orig_stdout = sys.stdout
-        comp_fnm = 'compare_bad_pixels_lists_PID{0}.txt'.format(os.getpid())
-        f = open(comp_fnm, 'w')
-        sys.stdout = f
-        # As on the above methods, crossmatch the tables defining sections
-        df_merge = pd.merge(df_ini, df_end, on=['x0', 'x1', 'y0', 'y1'])
-        if ((len(df_merge.index) != len(df_ini.index)) 
-            or (len(df_merge.index) != len(df_end.index))):
-            print 'Different number of matches!!!'
-        print df_merge
-        print 'pre Y4\n', df_ini
-        print 'post Y4\n', df_end
-        print '=' * 80
-        sys.stdout = orig_stdout
-        f.close()
-    # 5) Finally, return the updated array
-    return arr
+        if False:
+            tmp = map(bit_decompose, np.unique(xsub_x))
+            tmp = flatten_list(tmp)
+            tmp = list(set(tmp))
+            tmp = sorted(tmp)
+            print 'Added new-bit, after remove old-bit: {0}'.format(tmp)
+    # 4) Finally, return the updated array
+    return tuple([header, arr])
 
-def load_bitmask(fnm_list=None, tab_ini=None, tab_end=None, ext=0):
+def load_bitmask(fnm_list=None, tab_ini=None, tab_end=None, 
+                 ext=0, nproc=4):
     ''' Load set of bitmask from the input list. This function needs to change
     while the code advances/matures
     '''
     # Bits to be updated are those who are in the new set but not in the old
-    diff_bitname, diff_keyval = diff_bitdef()
+    diff_bitname, diff_keyval = diff_bitdef(show_diff=True)
     t_i = 'Bitdef to be updated: {0}'.format(diff_bitname)
     logging.info(t_i)
     if (len(diff_keyval) > 0):
@@ -414,6 +420,7 @@ def load_bitmask(fnm_list=None, tab_ini=None, tab_end=None, ext=0):
         logging.info(t_i)
     # Load the set of full paths for BPM files to be translated
     df_fnm = pd.read_table(fnm_list, names=['bpm'])
+    parallel_list = []
     for ind, f in df_fnm.iterrows():
         x, hdr = open_fits(f['bpm'])
         # We expect the FITS file to have only one extension
@@ -424,29 +431,41 @@ def load_bitmask(fnm_list=None, tab_ini=None, tab_end=None, ext=0):
         x = x[ext]
         hdr = hdr[ext]
         ccdnum = hdr['CCDNUM']
+        parallel_list.append([x, hdr, ccdnum, tab_ini, tab_end, False])
+    # Running in parallel
+    P1 = mp.Pool(processes=nproc)   
+    xnew = P1.map(change_bitmask, parallel_list)
+    P1.close()
+    
+    for i in xnew:
+        print i[0]
+    #
+
+    '''
         t0 = time.time()
         # Translate from a definition to another
         # Check at least there is one pixel masked with each bit in the 
         # layers. Match old vs new set od bits using spatial position 
         x_new = change_bitmask(x, hdr, ccdnum, tab_ini, tab_end)
         t1 = time.time()
-        t_i = 'Elpased time, CCD {0}: {1:.2} min'.format((t1 - t0) / 60.)
+        t_i = 'Elpased time, CCD {0}: {1:.2} min'.format(ccdnum, (t1 - t0) / 60.)
+        logging.info(t_i)
         # ==================================================================
         # PENDING: save a statistics of difference in number of bits between
         # initial and final definition
         # ==================================================================
-        
-        if False:
-            # Construct a filename to FITS to harbor one array per each of the 
-            # bits used in the masking. Example: is a mask has 5 bits, then the
-            # bit-layer file will be composed by 5 arrays each one with a
-            # different unique bit
-            out_bitLayer = os.path.join(os.getcwd(), 
-                                        'bitLayer_' + os.path.basename(f['bpm']))
-            # Split bitmask into its components
-            # NOTE: would be helpful to have this function run with the final
-            # translated BPM and also with the previous
-            split_bitmask_FITS(x_new, ccdnum, save_fits=True, outnm=out_bitLayer)
+    ''' 
+    if False:
+        # Construct a filename to FITS to harbor one array per each of the 
+        # bits used in the masking. Example: is a mask has 5 bits, then the
+        # bit-layer file will be composed by 5 arrays each one with a
+        # different unique bit
+        out_bitLayer = os.path.join(os.getcwd(), 
+                                    'bitLayer_' + os.path.basename(f['bpm']))
+        # Split bitmask into its components
+        # NOTE: would be helpful to have this function run with the final
+        # translated BPM and also with the previous
+        split_bitmask_FITS(x_new, ccdnum, save_fits=True, outnm=out_bitLayer)
 
 def get_args():
     ''' Construct the argument parser 
@@ -478,6 +497,8 @@ def get_args():
     h4 += ' ccd x1 x2 y1 y2 bpmdef_value. Default: {0}'.format(poly_end)
     argu.add_argument('--polyB', '-b', help=h4, metavar='filename',
                       default=poly_end)
+    h5 = 'Number of processors to run in parallel'
+    argu.add_argument('--nproc', '-n', help=h5, metavar='integer', type=int)
     #
     argu = argu.parse_args()
     return argu
@@ -485,13 +506,18 @@ def get_args():
 if __name__ == '__main__':
     # select * from ops_epoch_inputs where campaign='Y5N' and filetype='cal_bpm' order by name;
     t0 = time.time()
+    NPROC = mp.cpu_count() - 1
     # Argument parser
     argu = get_args()
+    if (argu.nproc is not None):
+        NPROC = argu.nproc
+    t_i = 'Running {0} processes in parallel'.format(NPROC)
+    logging.info(t_i)
     # Load the tables, storing info in global variables
     load_bitdef(d1=argu.ini, d2=argu.end)
     # Load BPM FITS file and split in its components
     load_bitmask(fnm_list=argu.mig, tab_ini=argu.polyA, 
-                 tab_end=argu.polyB)
+                 tab_end=argu.polyB, nproc=NPROC)
     # 
     t1 = time.time()
     t_i = 'Elapsed time for this run: {0:.2f} min'.format((t1 - t0) / 60.)
