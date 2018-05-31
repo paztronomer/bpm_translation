@@ -253,7 +253,7 @@ def split_bitmask_FITS(arr, ccdnum, save_fits=False, outnm=None):
 def change_bitmask(in_list):
     # For parralelism
     arr, header, tab_ini, tab_end, compare_tab = in_list
-    ccdnum = header['CCDNUM']
+    ccdnum = int(header['CCDNUM'])
     #
     t_i = 'Working on CCD={0}'.format(ccdnum)
     logging.info(t_i)
@@ -365,7 +365,9 @@ def change_bitmask(in_list):
                 t_e += ' New-bit={0},'.format(newbit)
                 t_e += ' pixel-bits={0},'.format(px_bits)
                 logging.error(t_e)
-                exit(1)
+                t_e = 'Writting out the original array'
+                logging.error(t_e)
+                return tuple([header, arr])
         # At this point, old-bit is in ALL the pixel-bits
         # Add the new-bit to the section, but still don't remove the old, 
         # because we need it to be present for overlapping sections.  
@@ -406,7 +408,7 @@ def change_bitmask(in_list):
     return tuple([header, arr])
 
 def operate_bitmask(fnm_list=None, tab_ini=None, tab_end=None, 
-                    ext=0, nproc=4, prefix=None):
+                    ext=0, nproc=4, prefix=None, fix_dtype=True):
     ''' Load set of bitmask from the input list. This function needs to change
     while the code advances/matures
     '''
@@ -433,8 +435,13 @@ def operate_bitmask(fnm_list=None, tab_ini=None, tab_end=None,
         # Get data from FITS
         x = x[ext]
         hdr = hdr[ext]
+        # Some BPMs were written with a bug: even when data is integer,
+        # the datatype was not. I need to fix it before do comparison
+        # against other integers (masks)
+        if fix_dtype:
+            x = x.astype('uint16') 
         # Aux for naming
-        tmp_col1.append(hdr['CCDNUM'])
+        tmp_col1.append(int(hdr['CCDNUM']))
         tmp_col2.append(os.path.basename(f['bpm']))
         # Fill the auxiliary list for parallel call
         parallel_list.append([x, hdr, tab_ini, tab_end, False])
@@ -446,7 +453,7 @@ def operate_bitmask(fnm_list=None, tab_ini=None, tab_end=None,
     P1.close()
     # Write out the modified bitmasks 
     for data in xnew:
-        ccdnum = data[0]['CCDNUM']
+        ccdnum = int(data[0]['CCDNUM'])
         fi_aux = df_aux.loc[df_aux['ccdnum'] == ccdnum, 'filename'].values[0]
         if (prefix is None):
             outnm = 'updated_' + fi_aux
