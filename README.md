@@ -8,16 +8,13 @@ A typical call is
 
 Where _BPM.txt_ is a text file with one full path per line, e.g.,
 
-    ```
     /archive_data/desarchive/OPS/cal/bpm/20141020t1030-r1474/p01/D_n20141020t1030_c01_r1474p01_bpm.fits
     /archive_data/desarchive/OPS/cal/bpm/20141020t1030-r1474/p01/D_n20141020t1030_c03_r1474p01_bpm.fits
     ...
-    ```
     
 And bpmdef_initial.txt, bpmdef_final.txt are 2 columns text files where first
 column is the bit name, and second column is the bit value, e.g.,
 
-    ```
     BPMDEF_FLAT_MIN     1
     BPMDEF_FLAT_MAX     2
     BPMDEF_FLAT_MASK    4
@@ -28,4 +25,3 @@ column is the bit name, and second column is the bit value, e.g.,
     BPMDEF_EDGE       128
     BPMDEF_CORR       256
     ...
-    ```
