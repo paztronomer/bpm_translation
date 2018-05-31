@@ -485,7 +485,9 @@ def get_args():
     t_gral = 'Code to translate a bitmask from a set of definitions to'
     t_gral += ' another. Works adding new bit definitions, therefore the new'
     t_gral += ' must contain new entries, but the bits in common between sets'
-    t_gral += ' needs to have the same integer value'
+    t_gral += ' needs to have the same integer value. The match is based on'
+    t_gral += ' spatial location of the mask-polygons between onl and new'
+    t_gral += ' definitions'
     t_epi = 'BPM format is assumed to be DES-wise'
     argu = argparse.ArgumentParser(description=t_gral, epilog=t_epi)
     # input table of definitions
