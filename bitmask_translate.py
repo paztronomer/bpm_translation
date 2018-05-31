@@ -253,7 +253,8 @@ def split_bitmask_FITS(arr, ccdnum, save_fits=False, outnm=None):
 
 def change_bitmask(in_list):
     # For parralelism
-    arr, header, ccdnum, tab_ini, tab_end, compare_tab = in_list
+    arr, header, tab_ini, tab_end, compare_tab = in_list
+    ccdnum = header['CCDNUM']
     #
     t_i = 'Working on CCD={0}'.format(ccdnum)
     logging.info(t_i)
@@ -405,8 +406,8 @@ def change_bitmask(in_list):
     # 4) Finally, return the updated array
     return tuple([header, arr])
 
-def load_bitmask(fnm_list=None, tab_ini=None, tab_end=None, 
-                 ext=0, nproc=4):
+def operate_bitmask(fnm_list=None, tab_ini=None, tab_end=None, 
+                    ext=0, nproc=4, prefix=None):
     ''' Load set of bitmask from the input list. This function needs to change
     while the code advances/matures
     '''
@@ -421,6 +422,9 @@ def load_bitmask(fnm_list=None, tab_ini=None, tab_end=None,
     # Load the set of full paths for BPM files to be translated
     df_fnm = pd.read_table(fnm_list, names=['bpm'])
     parallel_list = []
+    # Columns for Dataframe to be used as auxiliary for naming
+    tmp_col1 = []
+    tmp_col2 = []
     for ind, f in df_fnm.iterrows():
         x, hdr = open_fits(f['bpm'])
         # We expect the FITS file to have only one extension
@@ -430,31 +434,38 @@ def load_bitmask(fnm_list=None, tab_ini=None, tab_end=None,
         # Get data from FITS
         x = x[ext]
         hdr = hdr[ext]
-        ccdnum = hdr['CCDNUM']
-        parallel_list.append([x, hdr, ccdnum, tab_ini, tab_end, False])
+        # Aux for naming
+        tmp_col1.append(hdr['CCDNUM'])
+        tmp_col2.append(os.path.basename(f['bpm']))
+        # Fill the auxiliary list for parallel call
+        parallel_list.append([x, hdr, tab_ini, tab_end, False])
+    # Dataframe for naming
+    df_aux = pd.DataFrame({'ccdnum' : tmp_col1, 'filename' : tmp_col2})
     # Running in parallel
     P1 = mp.Pool(processes=nproc)   
     xnew = P1.map(change_bitmask, parallel_list)
     P1.close()
-    
-    for i in xnew:
-        print i[0]
+    # Write out the modified bitmasks 
+    for data in xnew:
+        ccdnum = data[0]['CCDNUM']
+        fi_aux = df_aux.loc[df_aux['ccdnum'] == ccdnum, 'filename'].values[0]
+        if (prefix is None):
+            outnm = 'updated_' + fi_aux
+        else:
+            outnm = prefix + '_c{0:02}.fits'.format(ccdnum)
+        try:
+            fits = fitsio.FITS(outnm, 'rw')
+            fits.write(data[1], header=data[0])
+            txt = 'fpazch updated bit definitions.'
+            txt += ' Original file {0}'.format(fi_aux)
+            hlist = [{'name' : 'comment', 'value' : txt},]
+            fits[-1].write_keys(hlist)
+            fits.close()
+            t_i = 'FITS file written: {0}'.format(outnm)
+        except:
+            t_e = sys.exc_info()[0]
+            logging.error(t_e)
     #
-
-    '''
-        t0 = time.time()
-        # Translate from a definition to another
-        # Check at least there is one pixel masked with each bit in the 
-        # layers. Match old vs new set od bits using spatial position 
-        x_new = change_bitmask(x, hdr, ccdnum, tab_ini, tab_end)
-        t1 = time.time()
-        t_i = 'Elpased time, CCD {0}: {1:.2} min'.format(ccdnum, (t1 - t0) / 60.)
-        logging.info(t_i)
-        # ==================================================================
-        # PENDING: save a statistics of difference in number of bits between
-        # initial and final definition
-        # ==================================================================
-    ''' 
     if False:
         # Construct a filename to FITS to harbor one array per each of the 
         # bits used in the masking. Example: is a mask has 5 bits, then the
@@ -466,6 +477,7 @@ def load_bitmask(fnm_list=None, tab_ini=None, tab_end=None,
         # NOTE: would be helpful to have this function run with the final
         # translated BPM and also with the previous
         split_bitmask_FITS(x_new, ccdnum, save_fits=True, outnm=out_bitLayer)
+    return True
 
 def get_args():
     ''' Construct the argument parser 
@@ -497,8 +509,12 @@ def get_args():
     h4 += ' ccd x1 x2 y1 y2 bpmdef_value. Default: {0}'.format(poly_end)
     argu.add_argument('--polyB', '-b', help=h4, metavar='filename',
                       default=poly_end)
-    h5 = 'Number of processors to run in parallel'
-    argu.add_argument('--nproc', '-n', help=h5, metavar='integer', type=int)
+    h5 = 'Prefix to be used for naming output files.'
+    h5 += ' Default is to add \'updated\' to the filename. If prefix is'
+    h5 += ' given, then the output will be \'{prefix}_c{ccdnum}.fits\''
+    argu.add_argument('--prefix', '-p', help=h5, metavar='str')
+    h6 = 'Number of processors to run in parallel. Default: N-1 cpu'
+    argu.add_argument('--nproc', '-n', help=h6, metavar='integer', type=int)
     #
     argu = argu.parse_args()
     return argu
@@ -516,8 +532,8 @@ if __name__ == '__main__':
     # Load the tables, storing info in global variables
     load_bitdef(d1=argu.ini, d2=argu.end)
     # Load BPM FITS file and split in its components
-    load_bitmask(fnm_list=argu.mig, tab_ini=argu.polyA, 
-                 tab_end=argu.polyB, nproc=NPROC)
+    operate_bitmask(fnm_list=argu.mig, tab_ini=argu.polyA, 
+                    tab_end=argu.polyB, nproc=NPROC, prefix=argu.prefix)
     # 
     t1 = time.time()
     t_i = 'Elapsed time for this run: {0:.2f} min'.format((t1 - t0) / 60.)
