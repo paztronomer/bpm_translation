@@ -1,5 +1,4 @@
-#!/usr/bin/env python
-''' Code for translating Bad Pixel Masks from a set of definitions to another
+''' Code for updating Bad Pixel Masks from a set of definitions to another
 Function-driven instead of Class, for simpler paralellisnm
 '''
 
@@ -522,7 +521,6 @@ def get_args():
     return argu
 
 if __name__ == '__main__':
-    # select * from ops_epoch_inputs where campaign='Y5N' and filetype='cal_bpm' order by name;
     t0 = time.time()
     NPROC = mp.cpu_count() - 1
     # Argument parser
